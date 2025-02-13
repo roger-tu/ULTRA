@@ -2,7 +2,7 @@ from functools import reduce
 from torch_scatter import scatter_add
 from torch_geometric.data import Data
 import torch
-
+import numpy as np
 
 def edge_match(edge_index, query_index):
     # O((n + q)logn) time
@@ -139,6 +139,19 @@ def compute_ranking(pred, target, mask=None):
         # unfiltered ranking
         ranking = torch.sum(pos_pred <= pred, dim=-1) + 1
     return ranking
+
+
+def get_predictions(pred:torch.tensor, mask: torch.tensor = None, top: int = 100) -> torch.tensor:
+    '''
+    Takes prediction and mask (optional) tensor(s) and outputs the model predictions as a tensor.
+    Anything masked will be ranked at the end. The top 'n' filtered predictions are kept, default to top 100.
+    '''
+    # applies a mask on the predictions; masked elements are changed to -inf
+    if mask is not None:
+        pred = pred.masked_fill(mask == 0, -np.inf)
+        
+    # sort by value and return indicies from largest to smallest; anything masked is ranked poorly
+    return torch.argsort(pred, descending = True)[:,:top]
 
 
 def build_relation_graph(graph):

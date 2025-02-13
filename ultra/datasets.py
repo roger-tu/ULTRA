@@ -511,6 +511,18 @@ class Hetionet(TransductiveDataset):
     name = "hetionet"
 
 
+class PrimeKG(TransductiveDataset):
+    name = "primekg"
+    delimiter = '\t'
+
+class PrimeKG2(TransductiveDataset):
+    name = "primekg2"
+    delimiter = '\t'
+
+class mPrimeKG(TransductiveDataset):
+    name = "mprimekg"
+    delimiter = '\t'
+
 class AristoV4(TransductiveDataset):
 
     url = "https://zenodo.org/record/5942560/files/aristo-v4.zip"

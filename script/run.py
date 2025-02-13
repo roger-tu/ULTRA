@@ -3,6 +3,7 @@ import sys
 import math
 import pprint
 from itertools import islice
+import polars as pl
 
 import torch
 import torch_geometric as pyg
@@ -11,6 +12,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch import distributed as dist
 from torch.utils import data as torch_data
+from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.data import Data
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -22,10 +24,9 @@ separator = ">" * 30
 line = "-" * 30
 
 
-def train_and_validate(cfg, model, train_data, valid_data, device, logger, filtered_data=None, batch_per_epoch=None):
+def train_and_validate(cfg, model, train_data, valid_data, device, logger, filtered_data=None, batch_per_epoch=None, tracker=None):
     if cfg.train.num_epoch == 0:
         return
-
     world_size = util.get_world_size()
     rank = util.get_rank()
 
@@ -49,7 +50,7 @@ def train_and_validate(cfg, model, train_data, valid_data, device, logger, filte
     step = math.ceil(cfg.train.num_epoch / 10)
     best_result = float("-inf")
     best_epoch = -1
-
+        
     batch_id = 0
     for i in range(0, cfg.train.num_epoch, step):
         parallel_model.train()
@@ -92,7 +93,10 @@ def train_and_validate(cfg, model, train_data, valid_data, device, logger, filte
                 logger.warning("Epoch %d end" % epoch)
                 logger.warning(line)
                 logger.warning("average binary cross entropy: %g" % avg_loss)
-
+                # if tracker is not None:
+                #     writer.add_scalar('Train Loss', avg_loss, epoch)
+                #     writer.flush()
+                
         epoch = min(cfg.train.num_epoch, i + step)
         if rank == 0:
             logger.warning("Save checkpoint to model_epoch_%d.pth" % epoch)
@@ -106,20 +110,42 @@ def train_and_validate(cfg, model, train_data, valid_data, device, logger, filte
         if rank == 0:
             logger.warning(separator)
             logger.warning("Evaluate on valid")
-        result = test(cfg, model, valid_data, filtered_data=filtered_data, device=device, logger=logger)
-        if result > best_result:
-            best_result = result
-            best_epoch = epoch
+        
+        results = test(cfg, model, valid_data, filtered_data=filtered_data, return_metrics=True, device=device, logger=logger)
 
+        # result = results['mrr'].item()
+        
+        if rank == 0:
+            result = results['mrr'].item() 
+            # add tracker for metrics
+            if tracker is not None:
+                writer.add_scalar(tag='Train/Loss', scalar_value=avg_loss, global_step=epoch) # loss
+                writer.add_scalar(tag = 'Valid/MRR', scalar_value=result, global_step=epoch) # mrr
+                writer.add_scalar(tag = 'Valid/hits@1', scalar_value=results['hits@1'].item(), global_step=epoch) # hits at 1, 3, 10
+                writer.add_scalar(tag = 'Valid/hits@3', scalar_value=results['hits@3'].item(), global_step=epoch) # hits at 1, 3, 10
+                writer.add_scalar(tag = 'Valid/hits@10', scalar_value=results['hits@10'].item(), global_step=epoch) # hits at 1, 3, 10
+                writer.flush()
+
+            if result > best_result:
+                best_result = result
+                best_epoch = epoch
     if rank == 0:
-        logger.warning("Load checkpoint from model_epoch_%d.pth" % best_epoch)
-    state = torch.load("model_epoch_%d.pth" % best_epoch, map_location=device)
-    model.load_state_dict(state["model"])
+        logger.warning(f"Load checkpoint from model_epoch_{best_epoch}.pth")
+        state = torch.load(f"model_epoch_{best_epoch}.pth", map_location=device)
+        model.load_state_dict(state["model"])
+        # if result > best_result:
+        #     best_result = result
+        #     best_epoch = epoch
+
+    # if rank == 0:
+    #     logger.warning("Load checkpoint from model_epoch_%d.pth" % best_epoch)
+    # state = torch.load("model_epoch_%d.pth" % best_epoch, map_location=device)
+    # model.load_state_dict(state["model"])
     util.synchronize()
 
 
 @torch.no_grad()
-def test(cfg, model, test_data, device, logger, filtered_data=None, return_metrics=False):
+def test(cfg, model, test_data, device, logger, filtered_data=None, return_metrics=False, label = 'valid', export_results=False):
     world_size = util.get_world_size()
     rank = util.get_rank()
 
@@ -131,6 +157,9 @@ def test(cfg, model, test_data, device, logger, filtered_data=None, return_metri
     rankings = []
     num_negatives = []
     tail_rankings, num_tail_negs = [], []  # for explicit tail-only evaluation needed for 5 datasets
+    head_rankings = []
+    batch_ls, h_predictions, t_predictions = [], [], []  # added line to store predictions
+    
     for batch in test_loader:
         t_batch, h_batch = tasks.all_negative(test_data, batch)
         t_pred = model(test_data, t_batch)
@@ -143,15 +172,20 @@ def test(cfg, model, test_data, device, logger, filtered_data=None, return_metri
         pos_h_index, pos_t_index, pos_r_index = batch.t()
         t_ranking = tasks.compute_ranking(t_pred, pos_t_index, t_mask)
         h_ranking = tasks.compute_ranking(h_pred, pos_h_index, h_mask)
+        # added to get h and t_predictions
+        batch_ls += batch.detach().cpu()
+        t_predictions += tasks.get_predictions(t_pred, t_mask, 100).detach().cpu()
+        h_predictions += tasks.get_predictions(h_pred, h_mask, 100).detach().cpu()
         num_t_negative = t_mask.sum(dim=-1)
         num_h_negative = h_mask.sum(dim=-1)
 
         rankings += [t_ranking, h_ranking]
         num_negatives += [num_t_negative, num_h_negative]
 
+        head_rankings += [h_ranking]
         tail_rankings += [t_ranking]
         num_tail_negs += [num_t_negative]
-
+    
     ranking = torch.cat(rankings)
     num_negative = torch.cat(num_negatives)
     all_size = torch.zeros(world_size, dtype=torch.long, device=device)
@@ -166,6 +200,49 @@ def test(cfg, model, test_data, device, logger, filtered_data=None, return_metri
         dist.all_reduce(all_size, op=dist.ReduceOp.SUM)
         dist.all_reduce(all_size_t, op=dist.ReduceOp.SUM)
 
+    # stack predictions
+    batches = torch.stack(batch_ls)
+    h_predictions = torch.stack(h_predictions)
+    t_predictions = torch.stack(t_predictions)
+    h_rank = torch.cat(head_rankings)
+    t_rank = torch.cat(tail_rankings)
+    
+    # gather and stack the stacked predictions
+    if world_size >1:
+        # create placeholder tensors
+        batches_ = [torch.ones(batches.size(), dtype=torch.long, device=device) for _ in range(world_size)]
+        h_predictions_ = [torch.ones(h_predictions.size(), dtype=torch.long, device=device) for _ in range(world_size)]
+        t_predictions_ = [torch.ones(t_predictions.size(), dtype=torch.long, device=device) for _ in range(world_size)]
+        h_rank_ = [torch.ones(h_rank.size(), dtype=torch.long, device=device) for _ in range(world_size)]
+        t_rank_ = [torch.ones(t_rank.size(), dtype=torch.long, device=device) for _ in range(world_size)]
+
+        # gather tensors from rank into placeholders
+        dist.all_gather(batches_, batches)
+        dist.all_gather(h_predictions_, h_predictions)
+        dist.all_gather(t_predictions_, t_predictions)
+        dist.all_gather(h_rank_, h_rank)
+        dist.all_gather(t_rank_, t_rank)
+
+        # stack the gathered tensors
+        batches = torch.cat(batches_)
+        h_predictions = torch.cat(h_predictions_)
+        t_predictions = torch.cat(t_predictions_)
+        h_rank = torch.cat(h_rank_)
+        t_rank = torch.cat(t_rank_)
+
+
+    # export predictions
+    if export_results & (rank==0):
+            pl.DataFrame({
+                'h': batches[:, 0].tolist(),
+                'r': batches[:, 2].tolist(),
+                't': batches[:, 1].tolist(),
+                'h_pred': h_predictions.tolist(),
+                't_pred': t_predictions.tolist(),
+                'h_rank': h_rank.tolist(),
+                't_rank': t_rank.tolist(),
+            }).write_parquet(os.path.join(working_dir, f'{label}.parquet'))
+        
     # obtaining all ranks 
     cum_size = all_size.cumsum(0)
     all_ranking = torch.zeros(all_size.sum(), dtype=torch.long, device=device)
@@ -220,8 +297,8 @@ def test(cfg, model, test_data, device, logger, filtered_data=None, return_metri
                 else:
                     score = (_ranking <= threshold).float().mean()
             logger.warning("%s: %g" % (metric, score))
-            metrics[metric] = score
-    mrr = (1 / all_ranking.float()).mean()
+            metrics[metric] = score.detach().cpu()
+    mrr = (1 / all_ranking.float()).mean().detach().cpu()
 
     return mrr if not return_metrics else metrics
 
@@ -232,6 +309,9 @@ if __name__ == "__main__":
     working_dir = util.create_working_directory(cfg)
 
     torch.manual_seed(args.seed + util.get_rank())
+
+    if cfg.train.tensorboard is not None:
+        writer = SummaryWriter(cfg.train.tensorboard)
 
     logger = util.get_root_logger()
     if util.get_rank() == 0:
@@ -289,13 +369,31 @@ if __name__ == "__main__":
     
     val_filtered_data = val_filtered_data.to(device)
     test_filtered_data = test_filtered_data.to(device)
-    
-    train_and_validate(cfg, model, train_data, valid_data, filtered_data=val_filtered_data, device=device, batch_per_epoch=cfg.train.batch_per_epoch, logger=logger)
+    # won't run if epoch == 0, selects best model to out for final valid/test scores
+    train_and_validate(cfg, model, train_data, valid_data, filtered_data=val_filtered_data, device=device, batch_per_epoch=cfg.train.batch_per_epoch, tracker=cfg.train.tensorboard, logger=logger)
     if util.get_rank() == 0:
         logger.warning(separator)
         logger.warning("Evaluate on valid")
-    test(cfg, model, valid_data, filtered_data=val_filtered_data, device=device, logger=logger)
+    valid_res = test(cfg, model, valid_data, filtered_data=val_filtered_data, device=device, logger=logger, return_metrics = True, export_results=True, label = 'valid')
     if util.get_rank() == 0:
         logger.warning(separator)
         logger.warning("Evaluate on test")
-    test(cfg, model, test_data, filtered_data=test_filtered_data, device=device, logger=logger)
+    test_res = test(cfg, model, test_data, filtered_data=test_filtered_data, device=device, logger=logger, return_metrics = True, export_results=True, label = 'test')
+    
+    # if (cfg.train.tensorboard is not None) and util.get_rank()==0:
+        
+        # writer.add_histogram('best_model/valid/mrr',valid_res['mrr'].item(),0)
+        # writer.add_histogram('best_model/valid/hits@1',valid_res['hits@1'].item(),0)
+        # writer.add_histogram('best_model/valid/hits@3',valid_res['hits@3'].item(),0)
+        # writer.add_histogram('best_model/valid/hits@10',valid_res['hits@10'].item(),0)
+
+        # writer.add_histogram('best_model/test/mrr',test_res['mrr'].item(),0)
+        # writer.add_histogram('best_model/test/hits@1',test_res['hits@1'].item(),0)
+        # writer.add_histogram('best_model/test/hits@3',test_res['hits@3'].item(),0)
+        # writer.add_histogram('best_model/test/hits@10',test_res['hits@10'].item(),0)
+        # writer.flush()
+        # writer.close()
+    if util.get_rank() ==0:
+        logger.warning(separator)
+        logger.warning("Evaluate on train") # get train edge predictions
+    test(cfg, model, test_data, filtered_data=test_filtered_data, device=device, logger=logger, return_metrics = True, export_results=True, label = 'train')

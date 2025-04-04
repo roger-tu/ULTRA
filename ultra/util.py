@@ -11,12 +11,14 @@ import jinja2
 from jinja2 import meta
 import easydict
 
+import polars as pl
+
 import torch
 from torch import distributed as dist
 from torch_geometric.data import Data
 from torch_geometric.datasets import RelLinkPredDataset, WordNet18RR
 
-from ultra import models, datasets
+from ultra import models, datasets, tasks
 
 
 logger = logging.getLogger(__file__)
@@ -163,3 +165,72 @@ def build_dataset(cfg):
 
     return dataset
 
+def inference_data(
+    dataset,
+    head_entity: str = 'MONDO:1024',
+    relation: str = 'associated with',
+):
+    '''
+    Extract all facts matching `head_entity` and `relation`, transforms the set of triples/facts into a torch_geometric.data.Data object. 
+    Example: given the double ("pneumonic plague", "associated with") extract all triples that match ("MONDO:1024", "associated with", [tail entity]), converts them to (69738, 10, [tail inv_entity_vocab]) and finally transforms into a Data object.
+    '''
+    ent_dict = dataset.entity_vocab
+    rel_dict = dataset.relation_vocab
+
+    # check if nodes / relations we are querying exists, if not, throw exception
+    try:
+        trans_h_ent = ent_dict[head_entity]
+        trans_t_ent_dummy = ent_dict['NCBI:5340'] # Plasminogen gene is our dummy
+    except:
+        raise KeyError(f'Entity, {trans_h_ent}, not found in graph vocabulary. Please check string follows appropriate format (i.e "SOURCE:12345" or "MONDO:1024").')
+    try:
+        trans_rel = rel_dict[relation]
+    except:
+        raise KeyError(f'Relation, {relation}, not found in graph vocabulary. Please check string follows appropriate format (i.e "associated with"')
+
+    # extract all relevant answers and translate them
+    g = (
+        pl.concat(
+            [
+                pl.read_csv(os.path.join(dataset.raw_dir,'train.txt'),separator='\t',new_columns=['h','r','t']), # train
+                pl.read_csv(os.path.join(dataset.raw_dir,'valid.txt'),separator='\t',new_columns=['h','r','t']), # valid
+                pl.read_csv(os.path.join(dataset.raw_dir,'test.txt'),separator='\t',new_columns=['h','r','t']), # test
+            ]
+        )
+        .filter(pl.col('h')==head_entity, pl.col('r')==relation)
+        .with_columns(
+            pl.col('h').replace(ent_dict).cast(pl.Int64),
+            pl.col('t').replace(ent_dict).cast(pl.Int64),
+            pl.col('r').replace(rel_dict).cast(pl.Int64)
+        )
+    )
+
+    if g.shape[0]==0:
+        #  if true head/rel combination doesn't exist, just generate a dummy one to make predictions on
+        target_edge_index=torch.tensor([[trans_h_ent],[trans_t_ent_dummy]]) # [[x], [y]] size (2,1)
+        target_edge_type=torch.tensor([trans_rel]) # [10] size 1
+        
+    elif g.shape[0]==1:
+        # if exactly 1 entry
+        target_edge_index = g.select(['h','t']).to_torch().t() #101rows x 2 col -> 2 rows x 101 col
+        target_edge_type=torch.tensor([trans_rel]) # [10] size 1
+        
+    else:
+        # get the set of real edges and their ranks given a h,r combo
+        target_edge_index = g.select(['h','t']).to_torch().t() #101rows x 2 col -> 2 rows x 101 col
+        target_edge_type = g.select('r').to_torch().t().squeeze() #101 rows x 1 col -> 1 rows x 101 col -> 0 rows x 101 cols
+        
+    # creates torch_geometric graph dataset
+    inference_data = Data(
+        edge_index=dataset[0].edge_index,
+        edge_type=dataset[0].edge_type,
+        target_edge_index=target_edge_index,
+        target_edge_type=target_edge_type,
+        num_relations=dataset[0].num_relations,
+        num_nodes=dataset[0].num_nodes,
+    )
+    
+    # adds relation graph
+    inference_data = tasks.build_relation_graph(inference_data)
+    
+    return inference_data

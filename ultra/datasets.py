@@ -283,9 +283,8 @@ class TransductiveDataset(InMemoryDataset):
             "inv_entity_vocab": inv_entity_vocab,
             "inv_rel_vocab": inv_rel_vocab
         }
-    
-    # default loading procedure: process train/valid/test files, create graphs from them
-    def process(self):
+
+    def load_tvt(self):
 
         train_files = self.raw_paths[:3]
 
@@ -294,6 +293,20 @@ class TransductiveDataset(InMemoryDataset):
                         train_results["inv_entity_vocab"], train_results["inv_rel_vocab"])
         test_results = self.load_file(train_files[2],
                         train_results["inv_entity_vocab"], train_results["inv_rel_vocab"])
+
+        return train_results, valid_results, test_results
+        
+    # default loading procedure: process train/valid/test files, create graphs from them
+    def process(self):
+
+        train_results, valid_results, test_results = self.load_tvt()
+        # train_files = self.raw_paths[:3]
+
+        # train_results = self.load_file(train_files[0], inv_entity_vocab={}, inv_rel_vocab={})
+        # valid_results = self.load_file(train_files[1], 
+        #                 train_results["inv_entity_vocab"], train_results["inv_rel_vocab"])
+        # test_results = self.load_file(train_files[2],
+        #                 train_results["inv_entity_vocab"], train_results["inv_rel_vocab"])
         
         # in some datasets, there are several new nodes in the test set, eg 123,143 YAGO train adn 123,182 in YAGO test
         # for consistency with other experimental results, we'll include those in the full vocab and num nodes
@@ -352,7 +365,17 @@ class TransductiveDataset(InMemoryDataset):
     def processed_file_names(self):
         return "data.pt"
 
+    @property
+    def entity_vocab(self):
+        '''embedding to entity-id dictionary'''
+        _, _, test_results = self.load_tvt()
+        return test_results['inv_entity_vocab']
 
+    @property
+    def relation_vocab(self):
+        '''embedding to relation-id dictionary'''
+        _, _, test_results = self.load_tvt()
+        return test_results['inv_rel_vocab']
 
 class CoDEx(TransductiveDataset):
 
@@ -511,12 +534,24 @@ class Hetionet(TransductiveDataset):
     name = "hetionet"
 
 
-class PrimeKG(TransductiveDataset):
-    name = "primekg"
+class PrimeKG1(TransductiveDataset):
+    name = "primekg1"
     delimiter = '\t'
 
 class PrimeKG2(TransductiveDataset):
     name = "primekg2"
+    delimiter = '\t'
+
+class PrimeKG3(TransductiveDataset):
+    name = "primekg3"
+    delimiter = '\t'
+
+class PrimeKG4(TransductiveDataset):
+    name = "primekg4"
+    delimiter = '\t'
+
+class PrimeKG5(TransductiveDataset):
+    name = "primekg5"
     delimiter = '\t'
 
 class mPrimeKG(TransductiveDataset):

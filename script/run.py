@@ -160,7 +160,7 @@ def test(cfg, model, test_data, device, logger, filtered_data=None, return_metri
     head_rankings = []
     batch_ls, h_predictions, t_predictions = [], [], []  # added line to store predictions
     
-    for batch in test_loader:
+    for batch_id, batch in enumerate(test_loader):
         t_batch, h_batch = tasks.all_negative(test_data, batch)
         t_pred = model(test_data, t_batch)
         h_pred = model(test_data, h_batch)
@@ -172,10 +172,7 @@ def test(cfg, model, test_data, device, logger, filtered_data=None, return_metri
         pos_h_index, pos_t_index, pos_r_index = batch.t()
         t_ranking = tasks.compute_ranking(t_pred, pos_t_index, t_mask)
         h_ranking = tasks.compute_ranking(h_pred, pos_h_index, h_mask)
-        # added to get h and t_predictions
-        batch_ls += batch.detach().cpu()
-        t_predictions += tasks.get_predictions(t_pred, t_mask, 100).detach().cpu()
-        h_predictions += tasks.get_predictions(h_pred, h_mask, 100).detach().cpu()
+        
         num_t_negative = t_mask.sum(dim=-1)
         num_h_negative = h_mask.sum(dim=-1)
 
@@ -185,6 +182,24 @@ def test(cfg, model, test_data, device, logger, filtered_data=None, return_metri
         head_rankings += [h_ranking]
         tail_rankings += [t_ranking]
         num_tail_negs += [num_t_negative]
+
+        # batch export of predictions results
+        if export_results:
+    
+            pl.DataFrame({
+                'h': batch[:, 0].tolist(),
+                'r': batch[:, 2].tolist(),
+                't': batch[:, 1].tolist(),
+                'h_pred': tasks.get_predictions(h_pred, h_mask, 100).tolist(),
+                't_pred': tasks.get_predictions(t_pred, t_mask, 100).tolist(),
+                'h_rank': h_ranking.tolist(),
+                't_rank': t_ranking.tolist(),
+            }).write_parquet(os.path.join(working_dir, f'{label}_{batch_id}.parquet'))
+            # batch_ls += batch
+            # t_predictions += tasks.get_predictions(t_pred, t_mask, 100)
+            # h_predictions += tasks.get_predictions(h_pred, h_mask, 100)
+
+            
     
     ranking = torch.cat(rankings)
     num_negative = torch.cat(num_negatives)
@@ -200,48 +215,54 @@ def test(cfg, model, test_data, device, logger, filtered_data=None, return_metri
         dist.all_reduce(all_size, op=dist.ReduceOp.SUM)
         dist.all_reduce(all_size_t, op=dist.ReduceOp.SUM)
 
-    # stack predictions
-    batches = torch.stack(batch_ls)
-    h_predictions = torch.stack(h_predictions)
-    t_predictions = torch.stack(t_predictions)
-    h_rank = torch.cat(head_rankings)
-    t_rank = torch.cat(tail_rankings)
     
-    # gather and stack the stacked predictions
-    if world_size >1:
-        # create placeholder tensors
-        batches_ = [torch.ones(batches.size(), dtype=torch.long, device=device) for _ in range(world_size)]
-        h_predictions_ = [torch.ones(h_predictions.size(), dtype=torch.long, device=device) for _ in range(world_size)]
-        t_predictions_ = [torch.ones(t_predictions.size(), dtype=torch.long, device=device) for _ in range(world_size)]
-        h_rank_ = [torch.ones(h_rank.size(), dtype=torch.long, device=device) for _ in range(world_size)]
-        t_rank_ = [torch.ones(t_rank.size(), dtype=torch.long, device=device) for _ in range(world_size)]
+    # if export_results:
+    #     # stack predictions
+    #     batches = torch.stack(batch_ls)
+    #     h_predictions = torch.stack(h_predictions)
+    #     t_predictions = torch.stack(t_predictions)
+    #     h_rank = torch.cat(head_rankings)
+    #     t_rank = torch.cat(tail_rankings)
+    
+    #     del batch_ls, head_rankings, tail_rankings
+    #     torch.cuda.empty_cache()
+        
+    #     # gather and stack the stacked predictions
+    #     if world_size >1:
+    #         # create placeholder tensors
+    #         batches_ = [torch.ones(batches.size(), dtype=torch.long, device=device) for _ in range(world_size)]
+    #         h_predictions_ = [torch.ones(h_predictions.size(), dtype=torch.long, device=device) for _ in range(world_size)]
+    #         t_predictions_ = [torch.ones(t_predictions.size(), dtype=torch.long, device=device) for _ in range(world_size)]
+    #         h_rank_ = [torch.ones(h_rank.size(), dtype=torch.long, device=device) for _ in range(world_size)]
+    #         t_rank_ = [torch.ones(t_rank.size(), dtype=torch.long, device=device) for _ in range(world_size)]
+    
+    #         # gather tensors from rank into placeholders
+    #         dist.all_gather(batches_, batches)
+    #         dist.all_gather(h_predictions_, h_predictions)
+    #         dist.all_gather(t_predictions_, t_predictions)
+    #         dist.all_gather(h_rank_, h_rank)
+    #         dist.all_gather(t_rank_, t_rank)
+    
+    #         # stack the gathered tensors
+    #         batches = torch.cat(batches_)
+    #         h_predictions = torch.cat(h_predictions_)
+    #         t_predictions = torch.cat(t_predictions_)
+    #         h_rank = torch.cat(h_rank_)
+    #         t_rank = torch.cat(t_rank_)
+    #         del batches_, h_predictions_, t_predictions_, h_rank_, t_rank_
+    #         torch.cuda.empty_cache()
 
-        # gather tensors from rank into placeholders
-        dist.all_gather(batches_, batches)
-        dist.all_gather(h_predictions_, h_predictions)
-        dist.all_gather(t_predictions_, t_predictions)
-        dist.all_gather(h_rank_, h_rank)
-        dist.all_gather(t_rank_, t_rank)
-
-        # stack the gathered tensors
-        batches = torch.cat(batches_)
-        h_predictions = torch.cat(h_predictions_)
-        t_predictions = torch.cat(t_predictions_)
-        h_rank = torch.cat(h_rank_)
-        t_rank = torch.cat(t_rank_)
-
-
-    # export predictions
-    if export_results & (rank==0):
-            pl.DataFrame({
-                'h': batches[:, 0].tolist(),
-                'r': batches[:, 2].tolist(),
-                't': batches[:, 1].tolist(),
-                'h_pred': h_predictions.tolist(),
-                't_pred': t_predictions.tolist(),
-                'h_rank': h_rank.tolist(),
-                't_rank': t_rank.tolist(),
-            }).write_parquet(os.path.join(working_dir, f'{label}.parquet'))
+    # # export predictions
+    # if export_results & (rank==0):
+    #         pl.DataFrame({
+    #             'h': batches[:, 0].tolist(),
+    #             'r': batches[:, 2].tolist(),
+    #             't': batches[:, 1].tolist(),
+    #             'h_pred': h_predictions.tolist(),
+    #             't_pred': t_predictions.tolist(),
+    #             'h_rank': h_rank.tolist(),
+    #             't_rank': t_rank.tolist(),
+    #         }).write_parquet(os.path.join(working_dir, f'{label}.parquet'))
         
     # obtaining all ranks 
     cum_size = all_size.cumsum(0)
@@ -393,7 +414,7 @@ if __name__ == "__main__":
         # writer.add_histogram('best_model/test/hits@10',test_res['hits@10'].item(),0)
         # writer.flush()
         # writer.close()
-    if util.get_rank() ==0:
-        logger.warning(separator)
-        logger.warning("Evaluate on train") # get train edge predictions
-    test(cfg, model, test_data, filtered_data=test_filtered_data, device=device, logger=logger, return_metrics = True, export_results=True, label = 'train')
+    # if util.get_rank() ==0:
+    #     logger.warning(separator)
+    #     logger.warning("Evaluate on train") # get train edge predictions
+    # test(cfg, model, test_data, filtered_data=test_filtered_data, device=device, logger=logger, return_metrics = True, export_results=True, label = 'train')

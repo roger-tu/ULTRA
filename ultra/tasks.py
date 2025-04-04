@@ -77,6 +77,10 @@ def negative_sampling(data, batch, num_negative, strict=True):
 
 
 def all_negative(data, batch):
+    '''
+    For every batch, map (h,r) to every possible tail and (r,t) to every possible head
+    t_batch, and h_batch returns a (n x 3) tensor
+    '''
     pos_h_index, pos_t_index, pos_r_index = batch.t()
     r_index = pos_r_index.unsqueeze(-1).expand(-1, data.num_nodes)
     # generate all negative tails for this batch
@@ -145,6 +149,7 @@ def get_predictions(pred:torch.tensor, mask: torch.tensor = None, top: int = 100
     '''
     Takes prediction and mask (optional) tensor(s) and outputs the model predictions as a tensor.
     Anything masked will be ranked at the end. The top 'n' filtered predictions are kept, default to top 100.
+    Return all results by assigning top=None
     '''
     # applies a mask on the predictions; masked elements are changed to -inf
     if mask is not None:

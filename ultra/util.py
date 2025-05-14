@@ -104,6 +104,15 @@ def synchronize():
         dist.barrier()
 
 
+def broadcast(to_cast:list):
+    '''
+    barrier to capture workers until workers are complete and conduct broadcast op
+    '''
+    if get_world_size() > 1:
+        dist.barrier()
+        dist.broadcast_object_list(object_list=to_cast, src=0)
+
+
 def get_device(cfg):
     if cfg.train.gpus:
         device = torch.device(cfg.train.gpus[get_rank()])
@@ -123,8 +132,12 @@ def create_working_directory(cfg):
     if world_size > 1 and not dist.is_initialized():
         dist.init_process_group("nccl", init_method="env://")
 
+    if 'out' in cfg.model.keys():
+        output = f"{cfg.model['out']}-{time.strftime('%m-%d-%H-%M-%S')}"
+    else:
+        output = time.strftime('%Y-%m-%d-%H-%M-%S')
     working_dir = os.path.join(os.path.expanduser(cfg.output_dir),
-                               cfg.model["class"], cfg.dataset["class"], time.strftime("%Y-%m-%d-%H-%M-%S"))
+                               cfg.model["class"], cfg.dataset["class"], f"{output}")
 
     # synchronize working directory
     if get_rank() == 0:

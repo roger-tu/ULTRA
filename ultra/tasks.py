@@ -141,7 +141,7 @@ def compute_ranking(pred, target, mask=None):
         ranking = torch.sum((pos_pred <= pred) & mask, dim=-1) + 1
     else:
         # unfiltered ranking
-        ranking = torch.sum(pos_pred <= pred, dim=-1) + 1
+        ranking = torch.sum(pos_pred <= pred, dim=-1)# + 1 
     return ranking
 
 
@@ -201,10 +201,10 @@ def build_relation_graph(graph):
     Aht = torch.sparse.mm(EhT, Et).coalesce()
     Ath = torch.sparse.mm(EtT, Eh).coalesce()
 
-    hh_edges = torch.cat([Ahh.indices().T, torch.zeros(Ahh.indices().T.shape[0], 1, dtype=torch.long).fill_(0)], dim=1)  # head to head
-    tt_edges = torch.cat([Att.indices().T, torch.zeros(Att.indices().T.shape[0], 1, dtype=torch.long).fill_(1)], dim=1)  # tail to tail
-    ht_edges = torch.cat([Aht.indices().T, torch.zeros(Aht.indices().T.shape[0], 1, dtype=torch.long).fill_(2)], dim=1)  # head to tail
-    th_edges = torch.cat([Ath.indices().T, torch.zeros(Ath.indices().T.shape[0], 1, dtype=torch.long).fill_(3)], dim=1)  # tail to head
+    hh_edges = torch.cat([Ahh.indices().T, torch.zeros(Ahh.indices().T.shape[0], 1, dtype=torch.long, device=device).fill_(0)], dim=1)  # head to head
+    tt_edges = torch.cat([Att.indices().T, torch.zeros(Att.indices().T.shape[0], 1, dtype=torch.long, device=device).fill_(1)], dim=1)  # tail to tail
+    ht_edges = torch.cat([Aht.indices().T, torch.zeros(Aht.indices().T.shape[0], 1, dtype=torch.long, device=device).fill_(2)], dim=1)  # head to tail
+    th_edges = torch.cat([Ath.indices().T, torch.zeros(Ath.indices().T.shape[0], 1, dtype=torch.long, device=device).fill_(3)], dim=1)  # tail to head
     
     rel_graph = Data(
         edge_index=torch.cat([hh_edges[:, [0, 1]].T, tt_edges[:, [0, 1]].T, ht_edges[:, [0, 1]].T, th_edges[:, [0, 1]].T], dim=1), 

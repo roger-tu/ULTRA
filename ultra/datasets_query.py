@@ -51,7 +51,7 @@ class LogicalQueryDataset(InMemoryDataset):
     @property
     def raw_file_names(self):
         return ["train.txt", "valid.txt", "test.txt"]
-    
+
     def download(self):
         download_path = download_url(self.url, self.root)
         extract_zip(download_path, self.root)
@@ -202,6 +202,10 @@ class LogicalQueryDataset(InMemoryDataset):
         return os.path.join(self.root, self.name)  # + processed
 
     @property
+    def processed_paths(self):
+        return os.path.join(self.processed_dir, self.processed_file_names)
+        
+    @property
     def processed_file_names(self):
         return "data.pt"
 
@@ -227,6 +231,183 @@ class NELL995LogicalQuery(LogicalQueryDataset):
     md5 = "d54f92e2e6a64d7f525b8fe366ab3f50"
 
 
+class PrimeKGLogicalQuery(LogicalQueryDataset):
+    # L649 adds dataset to known datasets
+    name = "PrimeKG-0.6"
+    
+    def __init__(self, root, transform=None, pre_transform=build_relation_graph, query_types=None, union_type="DNF", 
+                 train_patterns=('1p', '2p', '3p', '2i', '3i', '2in', '3in', 'inp', 'pni', 'pin'), **kwargs):
+
+        super().__init__(root, transform, pre_transform, query_types=query_types, union_type=union_type, train_patterns=train_patterns)
+
+    def process(self):
+
+        self.set_query_types()
+        path = self.raw_dir
+
+        # Space of entities 0 ... N is split into 3 sets
+        # Train node IDs: 0 ... K
+        # Val inference ids: K ... K+M
+        # Test inference ids: K+M .... N
+        try:
+            train_triplets = self.load_file(os.path.join(path, "train_graph.txt"))
+            val_inference = self.load_file(os.path.join(path, "val_inference.txt"))
+            test_inference = self.load_file(os.path.join(path, "test_inference.txt"))
+        except FileNotFoundError:
+            print("Loading .pt files")
+            train_triplets = self.load_pt(os.path.join(path, "train_graph.pt"))
+            val_inference = self.load_pt(os.path.join(path, "val_inference.pt"))
+            test_inference = self.load_pt(os.path.join(path, "test_inference.pt"))
+
+        entity_vocab, relation_vocab, inv_ent_vocab, inv_rel_vocab, \
+            tr_nodes, vl_nodes, ts_nodes = self.build_vocab(train_triplets, val_inference, test_inference)
+
+        num_node = len(entity_vocab) if entity_vocab else None
+        num_relation = len(relation_vocab) if relation_vocab else None
+
+        # Training graph: only training triples
+        self.train_graph = Data(edge_index=torch.LongTensor(train_triplets)[:, :2].t(), 
+                                edge_type=torch.LongTensor(train_triplets)[:, 2],
+                                num_nodes=len(tr_nodes), num_relations=num_relation)
+
+        # Validation graph: training triples (0..K) + new validation inference triples (K+1...K+M)
+        self.valid_graph = Data(edge_index=torch.LongTensor(train_triplets + val_inference)[:, :2].t(),
+                                edge_type=torch.LongTensor(train_triplets + val_inference)[:, 2],
+                                num_nodes=num_node, num_relations=num_relation,
+                                restrict_nodes=torch.LongTensor(vl_nodes)  # need those for evaluation 
+                                )
+
+        # Test graph: training triples (0..K) + new test inference triples (K+M+1... N)
+        self.test_graph = Data(edge_index=torch.LongTensor(train_triplets + test_inference)[:, :2].t(), 
+                               edge_type=torch.LongTensor(train_triplets + test_inference)[:, 2],
+                               num_nodes=num_node, num_relations=num_relation,
+                               restrict_nodes=torch.LongTensor(ts_nodes),  # need those for evaluation
+                               )
+
+        if self.pre_transform:
+            self.train_graph = self.pre_transform(self.train_graph)
+            self.valid_graph = self.pre_transform(self.valid_graph)
+            self.test_graph = self.pre_transform(self.test_graph)
+
+        # Full graph (aux purposes)
+        self.graph = Data(edge_index=torch.LongTensor(train_triplets + val_inference + test_inference)[:, :2].t(),
+                          edge_type=torch.LongTensor(train_triplets + val_inference + test_inference)[:, 2],
+                          num_nodes=num_node, num_relations=num_relation)
+        self.entity_vocab = entity_vocab
+        self.relation_vocab = relation_vocab
+        self.inv_entity_vocab = inv_ent_vocab
+        self.inv_relation_vocab = inv_rel_vocab
+
+        # Need those for evaluation
+        self.valid_nodes = torch.LongTensor(vl_nodes)
+        self.test_nodes = torch.LongTensor(ts_nodes)
+
+        self.load_queries(path=path)
+
+    def load_queries(self, path):
+
+        queries = []
+        type_ids = []
+        easy_answers = []
+        hard_answers = []
+        num_samples = []
+        num_entity_for_sample = []
+        max_query_length = 0
+
+        type2struct = {v: k for k, v in self.struct2type.items()}
+        filtered_training_structs = tuple([type2struct[x] for x in self.train_patterns])
+        for split in ["train", "valid", "test"]:
+            with open(os.path.join(path, "%s_queries.pkl" % split), "rb") as fin:
+                struct2queries = pickle.load(fin)
+            if split == "train":
+                query2hard_answers = defaultdict(lambda: defaultdict(set))
+                with open(os.path.join(path, "%s_answers_hard.pkl" % split), "rb") as fin:
+                    query2easy_answers = pickle.load(fin)
+            else:
+                with open(os.path.join(path, "%s_answers_easy.pkl" % split), "rb") as fin:
+                    query2easy_answers = pickle.load(fin)
+                with open(os.path.join(path, "%s_answers_hard.pkl" % split), "rb") as fin:
+                    query2hard_answers = pickle.load(fin)
+            num_sample = 0
+            structs = sorted(struct2queries.keys(), key=lambda s: self.struct2type[s])
+            structs = tqdm(structs, "Loading %s queries" % split)
+            for struct in structs:
+                query_type = self.struct2type[struct]
+                if query_type not in self.type2id:
+                    continue
+                # filter complex patterns ip, pi, 2u, up from training queries - those will be eval only
+                if split == "train" and struct not in filtered_training_structs:
+                    print(f"Skipping {query_type} - this will be used in evaluation")
+                    continue
+                struct_queries = sorted(struct2queries[struct])
+                for query in struct_queries:
+                    # The dataset format is slightly different from BetaE's
+                    easy_answers.append(query2easy_answers[struct][query])
+                    hard_answers.append(query2hard_answers[struct][query])
+                    query = Query.from_nested(query)
+                    #query = self.to_postfix_notation(query)
+                    max_query_length = max(max_query_length, len(query))
+                    queries.append(query)
+                    type_ids.append(self.type2id[query_type])
+                num_sample += len(struct_queries)
+            num_entity_for_sample += [getattr(self, "%s_graph" % split).num_nodes] * num_sample
+            num_samples.append(num_sample)
+
+        self.queries = queries
+        self.types = type_ids
+        self.easy_answers = easy_answers
+        self.hard_answers = hard_answers
+        self.num_samples = num_samples
+        self.num_entity_for_sample = num_entity_for_sample
+        self.max_query_length = max_query_length
+
+    def load_file(self, path):
+        triplets = []
+        with open(path) as fin:
+            for line in fin:
+                h, r, t = [int(x) for x in line.split()]
+                triplets.append((h, t, r))
+
+        return triplets
+
+    def load_pt(self, path):
+        triplets = torch.load(path, map_location="cpu", weights_only=False)
+        return triplets[:, [0, 2, 1]].tolist()
+
+    def build_vocab(self, train_triples, val_triples, test_triples):
+        # datasets are already shipped with contiguous node IDs from 0 to N, so the total num ents is N+1
+        all_triples = np.array(train_triples+val_triples+test_triples)
+        train_nodes = np.unique(np.array(train_triples)[:, [0, 1]])
+        val_nodes = np.unique(np.array(train_triples + val_triples)[:, [0, 1]])
+        test_nodes = np.unique(np.array(train_triples + test_triples)[:, [0, 1]])
+        num_entities = np.max(all_triples[:, [0, 1]]) + 1
+        num_relations = np.max(all_triples[:, 2]) + 1
+
+        ent_vocab = {i: i for i in range(num_entities)}
+        rel_vocab = {i: i for i in range(num_relations)}
+        inv_ent_vocab = {v:k for k,v in ent_vocab.items()}
+        inv_rel_vocab = {v:k for k,v in rel_vocab.items()}
+
+        return ent_vocab, rel_vocab, inv_ent_vocab, inv_rel_vocab, train_nodes, val_nodes, test_nodes
+
+    def __getitem__(self, index):
+        query = self.queries[index]
+        easy_answer = torch.tensor(list(self.easy_answers[index]), dtype=torch.long)
+        hard_answer = torch.tensor(list(self.hard_answers[index]), dtype=torch.long)
+        # num_entity in the inductive setup is different for different splits, take it from the relevant graph
+        num_entity = self.num_entity_for_sample[index]
+        return {
+            "query": F.pad(query, (0, self.max_query_length - len(query)), value=query.stop),
+            "type": self.types[index],
+            "easy_answer": index_to_mask(easy_answer, num_entity),
+            "hard_answer": index_to_mask(hard_answer, num_entity),
+        }
+        
+    @property
+    def raw_file_names(self):
+        return ["train_queries.pkl", "valid_queries.pkl", "test_queries.pkl"]
+
+        
 class InductiveFB15k237Query(LogicalQueryDataset):
 
     url = "https://zenodo.org/record/7306046/files/%s.zip"
@@ -640,6 +821,8 @@ class JointDataset(LogicalQueryDataset):
         'FB15k237': FB15k237LogicalQuery,
         'FB15k': FB15kLogicalQuery,
         'NELL995': NELL995LogicalQuery,
+        # ADDED
+        'PrimeKG-0.6': PrimeKGLogicalQuery,
         # TODO
         'FB_550': partial(InductiveFB15k237Query, version=550),
         'FB_300': partial(InductiveFB15k237Query, version=300),

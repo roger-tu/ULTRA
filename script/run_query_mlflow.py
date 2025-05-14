@@ -23,16 +23,17 @@ from ultra.query_utils import batch_evaluate, evaluate, gather_results
 from ultra.variadic import variadic_softmax
 from timeit import default_timer as timer
 
+import mlflow
 
 separator = ">" * 30
 line = "-" * 30
 
-def predict_and_target(model, graph, batch):
+def predict_and_target(model, graph, batch): # parallel_model, train_grpah, batch
     query = batch["query"]
     type = batch["type"]
     easy_answer = batch["easy_answer"]
     hard_answer = batch["hard_answer"]
-    
+    # dist.breakpoint(0)
     # turn off symbolic traversal at inference time
     pred = model(graph, query, symbolic_traversal=model.training)
     if not model.training:
@@ -54,7 +55,7 @@ def predict_and_target(model, graph, batch):
 def train_and_validate(cfg, model, train_graph, train_data, valid_graph, valid_data, query_id2type, device, logger, batch_per_epoch=None):
     if cfg.train.num_epoch == 0:
         return
-
+        
     world_size = util.get_world_size()
     rank = util.get_rank()
 
@@ -74,10 +75,27 @@ def train_and_validate(cfg, model, train_graph, train_data, valid_graph, valid_d
     else:
         parallel_model = model
 
+    # mlflow tracker tracking setting
+    if cfg.train['mlflow_tracker'] and (util.get_rank() == 0):
+        mlflow.set_tracking_uri(cfg.train.mlflow_arn)
+        mlflow.set_experiment(cfg.train.mlflow_experiment)
+        mlflow.start_run(run_name=cfg.train.mlflow_runid)
+        mlflow.log_params(
+            params = {
+                'dataset':cfg.dataset['class'],
+                'gpu':cfg.train['gpus'], 
+                'batch_size':cfg.train['batch_size'],
+                'batch_per_epoch':cfg.train['batch_per_epoch'],
+                'num_epochs':cfg.train['num_epoch'],
+                'optimizer':cls,
+                'lr':cfg.optimizer['lr']
+            }
+        )
+    
     step = math.ceil(cfg.train.num_epoch / 10)
     best_result = float("-inf")
     best_epoch = -1
-
+    
     batch_id = 0
     for i in range(0, cfg.train.num_epoch, step):
         parallel_model.train()
@@ -92,6 +110,7 @@ def train_and_validate(cfg, model, train_graph, train_data, valid_graph, valid_d
                 if device.type == "cuda":
                     train_graph = train_graph.to(device)
                     batch = query_utils.cuda(batch, device=device)
+                    # dist.breakpoint(0)
                 pred, target = predict_and_target(parallel_model, train_graph, batch)
 
                 loss = F.binary_cross_entropy_with_logits(pred, target, reduction="none")
@@ -121,6 +140,11 @@ def train_and_validate(cfg, model, train_graph, train_data, valid_graph, valid_d
                 if util.get_rank() == 0 and batch_id % cfg.train.log_interval == 0:
                     logger.warning(separator)
                     logger.warning("binary cross entropy: %g" % loss)
+                    if cfg.train.mlflow_tracker:
+                        mlflow.log_metric('binary_cross_entropy_loss', loss, batch_id)
+                    # save model every 10k steps
+                    if batch_id % (cfg.train.log_interval * 100) == 0:
+                        torch.save(state, f"model_step_{batch_id}.pth")
                 losses.append(loss.item())
                 batch_id += 1
 
@@ -132,7 +156,7 @@ def train_and_validate(cfg, model, train_graph, train_data, valid_graph, valid_d
                 logger.warning("average binary cross entropy: %g" % avg_loss)
 
         epoch = min(cfg.train.num_epoch, i + step)
-        if rank == 0:
+        if util.get_rank() == 0:
             logger.warning("Save checkpoint to model_epoch_%d.pth" % epoch)
             state = {
                 "model": model.state_dict(),
@@ -141,19 +165,33 @@ def train_and_validate(cfg, model, train_graph, train_data, valid_graph, valid_d
             torch.save(state, "model_epoch_%d.pth" % epoch)
         util.synchronize()
 
-        if rank == 0:
+        if util.get_rank() == 0:
             logger.warning(separator)
             logger.warning("Evaluate on valid")
         result = test(cfg, model, valid_graph, valid_data, query_id2type=query_id2type, device=device, logger=logger)
+        util.synchronize()
+        if util.get_rank() == 0:
+
+            # add tracker for metrics
+            if cfg.train.mlflow_tracker:
+                mlflow.log_metric('avg_train_loss', avg_loss, epoch)
+                mlflow.log_metric('valid_mrr', result['mrr'].item(), epoch)
+                mlflow.log_metric('valid_hits-1', result['hits@1'].item(), epoch)
+                mlflow.log_metric('valid_hits-3', result['hits@3'].item(), epoch)
+                mlflow.log_metric('valid_hits-10', result['hits@10'].item(), epoch)
+        util.synchronize()
         if result['mrr'] > best_result:
             best_result = result['mrr']
             best_epoch = epoch
 
-    if rank == 0:
+    if util.get_rank() == 0:
         logger.warning("Load checkpoint from model_epoch_%d.pth" % best_epoch)
-    state = torch.load("model_epoch_%d.pth" % best_epoch, map_location=device)
-    model.load_state_dict(state["model"])
+        state = torch.load("model_epoch_%d.pth" % best_epoch, map_location=device)
+        model.load_state_dict(state["model"])
+        
     util.synchronize()
+    if cfg.train.mlflow_tracker:
+        mlflow.end_run()
 
 
 @torch.no_grad()
@@ -226,6 +264,8 @@ if __name__ == "__main__":
         logger.warning("Random seed: %d" % args.seed)
         logger.warning("Config file: %s" % args.config)
         logger.warning("World size: %d" % util.get_world_size())
+        logger.warning(f"Device: {device}")
+        logger.warning(f"Device Type: {device.type}")
         logger.warning(pprint.pformat(cfg))
     
     # tried to execute dataset generation to just 1 gpu so we don't overload memory, but it hangs at dist.broadcast_object_list()
@@ -330,6 +370,7 @@ if __name__ == "__main__":
         if util.get_rank() == 0:
             logger.warning(separator)
             logger.warning("Run training")
+        dist.barrier()
         train_and_validate(cfg, model, train_graph, train_data, valid_graph, valid_data, query_id2type=dataset.id2type, device=device, batch_per_epoch=cfg.train.batch_per_epoch, logger=logger)
 
     elif eval_mode == "valid":

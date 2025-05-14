@@ -1,0 +1,47 @@
+output_dir: ~/git/
+
+dataset:
+  class: {{ dataset }} # class obj defined in ultra/datasets.py
+  root: {{ data_dir }} # where 'dataset' is stored
+
+model:
+  class: Ultra
+  relation_model:
+    class: RelNBFNet
+    input_dim: 64
+    hidden_dims: [64, 64, 64, 64, 64, 64]
+    message_func: distmult
+    aggregate_func: sum
+    short_cut: yes
+    layer_norm: yes
+  entity_model:
+    class: EntityNBFNet
+    input_dim: 64
+    hidden_dims: [64, 64, 64, 64, 64, 64]
+    message_func: distmult
+    aggregate_func: sum
+    short_cut: yes
+    layer_norm: yes
+
+task:
+  name: TransductiveInference
+  num_negative: 256
+  strict_negative: yes
+  adversarial_temperature: 1
+  metric: [mr, mrr, hits@1, hits@3, hits@10]
+
+optimizer:
+  class: AdamW
+  lr: 5.0e-4
+
+train:
+  gpus: {{ gpus }}
+  batch_size: 48
+  num_epoch: {{ epochs }}
+  log_interval: 100
+  batch_per_epoch: {{ bpe }}
+  mlflow_tracker: {{ flow_state }} # yes/no, or True/False in shell
+  mlflow_arn: # mlflow instance arn
+  mlflow_experiment: {{ flow_name }} # experiment name
+  mlflow_runid: {{ flow_runid }}
+checkpoint: {{ ckpt }}

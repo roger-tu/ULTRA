@@ -1,8 +1,8 @@
-output_dir: ~/knowledge-graph-workflows-and-models-team-primeKG/output/ # ~/git/ # where you want to push your output
+output_dir: ~/knowledge-graph-workflows-and-models-team-primeKG/output/ # ~/git/
 
 dataset:
   class: {{ dataset }}
-  root: {{ data_dir }} # wherever your dataset is stored
+  root: ~/knowledge-graph-workflows-and-models-team-primeKG/data
 
 model:
   class: Ultra
@@ -36,11 +36,9 @@ optimizer:
 
 train:
   gpus: {{ gpus }}
-  batch_size: 8
-  num_epoch: 0
+  batch_size: 48
+  num_epoch: {{ epochs }}
   log_interval: 100
-  batch_per_epoch: null
-checkpoint: {{ ckpt }} # full/path/to/ckpt/.pth
-infer:
-  h_ent: {{ h_ent }} #'MONDO:12345'
-  rel: {{ rel }} #'associated with'
+  batch_per_epoch: {{ bpe }}
+  tensorboard: {{ tb }}
+checkpoint: {{ ckpt }}

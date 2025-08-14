@@ -215,7 +215,7 @@ def test(cfg, model, test_data, device, logger, filtered_data=None, return_metri
         dist.all_reduce(all_size, op=dist.ReduceOp.SUM)
         dist.all_reduce(all_size_t, op=dist.ReduceOp.SUM)
 
-    
+    # ONLY IF YOU WANT TO EXPORT ALL RESULTS AT ONCE. OTHERWISE CONCATENATE THE DATAFRAMES THAT HAVE BEEN EXPORTED #
     # if export_results:
     #     # stack predictions
     #     batches = torch.stack(batch_ls)

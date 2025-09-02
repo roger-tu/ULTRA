@@ -18,13 +18,18 @@ def combine_parquet_results(path: str) -> pl.DataFrame:
     """
     returns a dataframe combining the ultra inference predictions made in a particular file path
     """
-    return pl.concat(
-        [
-            pl.read_parquet(os.path.join(path, i))
-            for i in os.listdir(path)
-            if i.endswith(".parquet")
-        ]
-    )
+
+    df_ls = []
+    # iterate through parquet files in the path
+    for i in os.listdir(path):
+        if i.endswith(".parquet"):
+            # error handling if parquet file is malformed (just in case)
+            try:
+                df_ls.append(pl.read_parquet(osp.join(path, i)))
+            except Exception as e:
+                print(f"Error reading {i}:\n{e}")
+
+    return pl.concat(df_ls)
 
 
 def load_id_dict(

@@ -143,7 +143,7 @@ def create_working_directory(cfg):
     else:
         output = time.strftime("%Y-%m-%d-%H-%M-%S")
     working_dir = os.path.join(
-        os.path.expanduser(cfg.output_dir),
+        os.path.expanduser(cfg.local_output_dir),
         cfg.model["class"],
         cfg.dataset["class"],
         f"{output}",
@@ -226,7 +226,45 @@ def translate_relation(dataset, relation: str):
         )
 
 
-def inference_data(
+def build_graph(dataset, translate=False):
+    """
+    Build a polars dataframe representation of the graph from the dataset object.
+    If translate is True, will convert entity and relation strings to integer indices using dataset vocabularies.
+    """
+
+    g = pl.concat(
+        [
+            pl.read_csv(
+                os.path.join(dataset.raw_dir, "train.txt"),
+                separator="\t",
+                new_columns=["h", "r", "t"],
+            ),  # train
+            pl.read_csv(
+                os.path.join(dataset.raw_dir, "valid.txt"),
+                separator="\t",
+                new_columns=["h", "r", "t"],
+            ),  # valid
+            pl.read_csv(
+                os.path.join(dataset.raw_dir, "test.txt"),
+                separator="\t",
+                new_columns=["h", "r", "t"],
+            ),  # test
+        ]
+    )
+
+    if translate:
+        ent_dict = dataset.entity_vocab
+        rel_dict = dataset.relation_vocab
+        g = g.with_columns(
+            pl.col("h").replace(ent_dict).cast(pl.Int64),
+            pl.col("t").replace(ent_dict).cast(pl.Int64),
+            pl.col("r").replace(rel_dict).cast(pl.Int64),
+        )
+
+    return g
+
+
+def inference_data_single(
     dataset,
     head_entity: str = "MONDO:1024",
     relation: str = "associated with",
@@ -236,52 +274,24 @@ def inference_data(
     Example: given the double ("pneumonic plague", "associated with") extract all triples that match ("MONDO:1024", "associated with", [tail entity]), converts them to (69738, 10, [tail inv_entity_vocab]) and finally transforms into a Data object.
     """
 
-    # check if nodes / relations we are querying exists, if not, throw exception
+    # TODO: check if nodes / relations we are querying exists, if not, throw exception
+    # Translate head entity and relation to integer index
     trans_h_ent = translate_entity(dataset, head_entity)
     trans_t_ent_dummy = translate_entity(
         dataset, "NCBI:5340"
     )  # Plasminogen gene is our dummy
     trans_rel = translate_relation(dataset, relation)
-
-    ent_dict = dataset.entity_vocab
-    rel_dict = dataset.relation_vocab
+    # build polars dataframe representation of the graph
+    g = build_graph(dataset, translate=True)
     # extract all relevant answers and translate them
-    g = (
-        pl.concat(
-            [
-                pl.read_csv(
-                    os.path.join(dataset.raw_dir, "train.txt"),
-                    separator="\t",
-                    new_columns=["h", "r", "t"],
-                ),  # train
-                pl.read_csv(
-                    os.path.join(dataset.raw_dir, "valid.txt"),
-                    separator="\t",
-                    new_columns=["h", "r", "t"],
-                ),  # valid
-                pl.read_csv(
-                    os.path.join(dataset.raw_dir, "test.txt"),
-                    separator="\t",
-                    new_columns=["h", "r", "t"],
-                ),  # test
-            ]
-        )
-        .filter(pl.col("h") == head_entity, pl.col("r") == relation)
-        .with_columns(
-            pl.col("h").replace(ent_dict).cast(pl.Int64),
-            pl.col("t").replace(ent_dict).cast(pl.Int64),
-            pl.col("r").replace(rel_dict).cast(pl.Int64),
-        )
-    )
-
-    if g.shape[0] == 0:
+    if g.filter(pl.col("h") == trans_h_ent, pl.col("r") == trans_rel).shape[0] == 0:
         #  if true head/rel combination doesn't exist, just generate a dummy one to make predictions on
         target_edge_index = torch.tensor(
             [[trans_h_ent], [trans_t_ent_dummy]]
         )  # [[x], [y]] size (2,1)
         target_edge_type = torch.tensor([trans_rel])  # [10] size 1
 
-    elif g.shape[0] == 1:
+    elif g.filter(pl.col("h") == trans_h_ent, pl.col("r") == trans_rel).shape[0] == 1:
         # if exactly 1 entry
         target_edge_index = (
             g.select(["h", "t"]).to_torch().t()
@@ -311,6 +321,36 @@ def inference_data(
     inference_data = tasks.build_relation_graph(inference_data)
 
     return inference_data
+
+
+def inference_data_batch(dataset, inference_file: str):
+    """
+    Load a batch of inference triples from a tsv file and transform them into a torch_geometric.data.Data object.
+    The tsv file should have three columns: h_ent, rel, t_ent.
+    """
+    # load inference triples
+    infer_triples = pl.read_csv(
+        inference_file,
+        separator="\t",
+        new_columns=["h", "r", "t"],
+    )
+    # translate to integer indices
+    ent_dict = dataset.entity_vocab
+    rel_dict = dataset.relation_vocab
+    infer_triples = infer_triples.with_columns(
+        pl.col("h").replace(ent_dict).cast(pl.Int64),
+        pl.col("t").replace(ent_dict).cast(pl.Int64),
+        pl.col("r").replace(rel_dict).cast(pl.Int64),
+    )
+    # transform into torch_geometric.data.Data object
+    data = Data(
+        edge_index=infer_triples[["h", "t"]].to_torch().t(),
+        edge_type=infer_triples["r"].to_torch(),
+        num_relations=dataset[0].num_relations,
+        num_nodes=dataset[0].num_nodes,
+    )
+
+    return data
 
 
 def reasoning_data(cfg, dataset):

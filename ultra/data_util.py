@@ -5,6 +5,7 @@ import pickle
 import pathlib as Path
 
 # data sci
+from click import Tuple
 import polars as pl
 import pandas as pd
 import numpy as np
@@ -34,7 +35,7 @@ def combine_parquet_results(path: str) -> pl.DataFrame:
 
 def load_id_dict(
     path: str = "/home/sagemaker-user/git/Ultra/PrimeKG1/",
-) -> (dict, dict):
+) -> tuple[dict, dict]:
     """
     loads pickled dictionaries for embedding to entity and relation dictionaries,
     and entity to name dictionary, respectively
@@ -48,23 +49,8 @@ def load_id_dict(
             id2rel_dict = pickle.load(f)
 
     except:
-        try:
-            # if pickle files don't exist, load the dataset
-            dataset = getattr(datasets, Path.Path(data_dir).name)
-            dataset = dataset(
-                root="/home/sagemaker-user/knowledge-graph-workflows-and-models-team-primeKG/data/"
-            )
-            id2ent_dict = {v: k for k, v in dataset.entity_vocab.items()}
-            id2rel_dict = {v: k for k, v in dataset.relation_vocab.items()}
-            # export
-            with open(os.path.join(path, "id2ent_dict.pkl"), "wb") as f:
-                pickle.dump(id2ent_dict, f)
-
-            with open(os.path.join(path, "id2rel_dict.pkl"), "wb") as f:
-                pickle.dump(id2rel_dict, f)
-        except:
             # default fail, raise error
-            raise ValueError(
+        raise ValueError(
                 "id2ent_dict or id2rel_dict cannot be loaded. Please check for missing pickle files."
             )
 
@@ -75,6 +61,81 @@ def load_id_dict(
         raise ValueError(f"ent2name_dict not in {path}")
 
     return id2ent_dict, id2rel_dict, ent2name_dict
+
+
+def load_nodes(
+    data_path: str = "~/knowledge-graph-workflows-and-models-team-primeKG/data/nodes.txt",
+) -> pl.DataFrame:
+    """
+    returns a dataframe of nodes with columns ['name','type','source','source_id','source_label']
+    :data_path: is the path (including file name) to the directory of the dataset
+    """
+    nodes = pl.read_csv(
+        data_path,
+        separator="\t",
+        schema={
+            "name": pl.String,
+            "type": pl.String,
+            "source": pl.String,
+            "source_id": pl.String,
+            "source_label": pl.String,
+        },
+    )
+
+    return nodes
+
+
+def load_graph(
+    data_path: str = "~/knowledge-graph-workflows-and-models-team-primeKG/data/primekg1/raw/",
+    node_path: str = "~/knowledge-graph-workflows-and-models-team-primeKG/data/nodes.txt",
+) -> pl.DataFrame:
+    """
+    returns a dataframe of edges with columns ['h','r','t','h_type','t_type']
+    :data_path: is the path (including file name) to the directory of the dataset
+    """
+    graph = pl.concat(
+        [
+            pl.read_csv(
+                os.path.join(data_path, "train.txt"),
+                separator="\t",
+                new_columns=["h", "r", "t"],
+            ),
+            pl.read_csv(
+                os.path.join(data_path, "test.txt"),
+                separator="\t",
+                new_columns=["h", "r", "t"],
+            ),
+            pl.read_csv(
+                os.path.join(data_path, "valid.txt"),
+                separator="\t",
+                new_columns=["h", "r", "t"],
+            ),
+        ]
+    )
+
+    nodes = load_nodes(node_path)
+    # add head and tail types
+    graph = graph.join(
+        nodes[["source_label", "type"]].rename({"source_label": "h", "type": "h_type"}),
+        on="h",
+        how="left",
+    ).join(
+        nodes[["source_label", "type"]].rename({"source_label": "t", "type": "t_type"}),
+        on="t",
+        how="left",
+    )
+
+    return graph
+
+
+def get_graph_schema(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    returns a dataframe with the graph schema of the input dataframe
+    :df: is a polars dataframe of triples with columns ['h','r','t','h_type','t_type']
+    :schema: is a polars dataframe of unique ['h_type','r','t_type'] combinations
+    """
+    schema = df[["h_type", "r", "t_type"]].unique()
+    return schema
 
 
 def translate_hrt(df, data_path: str) -> pl.DataFrame:
@@ -118,10 +179,11 @@ def load_and_translate_results(
     return df
 
 
-def filter_process_results(df, results_path, filter_ent=None) -> pl.DataFrame:
+def filter_process_results(df, results_path, filter_ent: list = None) -> pl.DataFrame:
     """
     returns a dataframe with prediction scores as well as prediction novelty (whether or not the edge already exists in primekg)
-    the dataframe is filtered by gene_queries if it's not None
+    the dataframe is filtered for entities in :filter_ent: if it's not None
+
     """
     # get translations
     id2ent, id2rel, ent2name = load_id_dict(results_path)
@@ -164,6 +226,78 @@ def filter_process_results(df, results_path, filter_ent=None) -> pl.DataFrame:
     ]
 
     return score_df
+
+
+def structure_results(
+    df: pl.DataFrame,
+    node_path="~/knowledge-graph-workflows-and-models-team-primeKG/data/nodes.txt",
+    graph_path="~/knowledge-graph-workflows-and-models-team-primeKG/data/primekg1/raw/",
+    top_k=None,
+) -> pl.DataFrame:
+    """
+    returns a dataframe with predictions filtered by graph schema
+    :df: is a polars dataframe of triples with columns ['h_label','h_name','r_label','t_pred_label','t_pred_name','t_pred_score','edge_in_primekg'] extracted from filter_process_results()
+    :node_path: is the path (including file name) to the directory of the dataset nodes
+    :graph_path: is the path to the directory of the dataset graph
+    :top_k: keep the top k results, default is None which keeps all results
+    """
+    # load nodes and graph schema
+    nodes = load_nodes(node_path)
+    schema = get_graph_schema(load_graph(graph_path, node_path))
+
+    # add head and tail types to results, merge schema, filter by schema, group results to clean up
+    df = (
+        df.join(
+            nodes[["source_label", "type"]].rename(
+                {"source_label": "h_label", "type": "h_type"}
+            ),
+            on="h_label",
+            how="left",
+        )  # get h_type
+        .join(
+            nodes[["source_label", "type"]].rename(
+                {"source_label": "t_pred_label", "type": "t_pred_type"}
+            ),
+            on="t_pred_label",
+            how="left",
+        )  # get pred_t_type
+        .join(
+            schema.group_by(["h_type", "r"])
+            .agg("t_type")
+            .rename({"r": "r_label", "t_type": "schema_t_type"}),
+            on=["h_type", "r_label"],
+            how="left",
+        )  # merge schema
+        .with_columns(
+            pl.col("t_pred_type").is_in(pl.col("schema_t_type")).alias("schema_match")
+        )  # check schema
+        .drop("schema_t_type")
+        .filter(
+            pl.col("schema_match") == True
+        )  # keep predictions that match the schema
+        .drop("schema_match")
+        .sort("t_pred_score", descending=True)
+        .group_by(["h_label", "h_name", "h_type", "r_label"], maintain_order=True)
+        .agg(
+            [
+                "t_pred_label",
+                "t_pred_name",
+                "t_pred_score",
+                "t_pred_type",
+                "edge_in_primekg",
+            ]
+        )
+    )
+    if top_k is not None:
+        df = df.with_columns(
+            pl.col("t_pred_label").list.head(top_k + 1),
+            pl.col("t_pred_name").list.head(top_k + 1),
+            pl.col("t_pred_score").list.head(top_k + 1),
+            pl.col("t_pred_type").list.head(top_k + 1),
+            pl.col("edge_in_primekg").list.head(top_k + 1),
+        )
+
+    return df
 
 
 def extract_ht_score(df: pl.DataFrame) -> dict:

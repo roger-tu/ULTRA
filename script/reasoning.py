@@ -175,7 +175,7 @@ def test(cfg, model, test_data, query, logger, dataset, entity_vocab):
 
     # export results
     output_path = os.path.join(
-        cfg.output_dir,
+        cfg.local_output_dir,
         cfg.model["class"],
         cfg.dataset["class"],
         f"reasoning_results_{rank}.parquet",

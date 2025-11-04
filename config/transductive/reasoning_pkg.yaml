@@ -1,0 +1,48 @@
+local_output_dir: ~/knowledge-graph-workflows-and-models-team-primeKG/output # where you want to push your output
+
+dataset:
+  class: {{ dataset }} # usually 'PrimeKG1'
+  root: ~/knowledge-graph-workflows-and-models-team-primeKG/data # wherever your dataset is stored
+
+model:
+  class: Ultra
+  relation_model:
+    class: RelNBFNet
+    input_dim: 64
+    hidden_dims: [64, 64, 64, 64, 64, 64]
+    message_func: distmult
+    aggregate_func: sum
+    short_cut: yes
+    layer_norm: yes
+  entity_model:
+    class: EntityNBFNet
+    input_dim: 64
+    hidden_dims: [64, 64, 64, 64, 64, 64]
+    message_func: distmult
+    aggregate_func: sum
+    short_cut: yes
+    layer_norm: yes
+    path_topk: 100
+
+# task:
+#   name: TransductiveInference
+#   num_negative: 256
+#   strict_negative: yes
+#   adversarial_temperature: 1
+#   metric: [mr, mrr, hits@1, hits@3, hits@10]
+
+optimizer:
+  class: AdamW
+  lr: 5.0e-4
+
+train:
+  gpus: {{ gpus }}
+  batch_size: {{ batch_size }} # 4
+  num_epoch: 0
+  log_interval: 100
+  batch_per_epoch: null
+checkpoint: {{ ckpt }} # '/home/sagemaker-user/knowledge-graph-workflows-and-models-team-primeKG/code/ULTRA/ckpts/ultra_primekg_50g_ft_epoch_1.pth'
+
+entity_vocab: {{ entity_vocab }} # '/home/sagemaker-user/knowledge-graph-workflows-and-models-team-primeKG/data/PrimeKG1/entity_vocab.txt'
+infer:
+  triple_list: {{ triple_list }}

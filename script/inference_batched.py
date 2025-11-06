@@ -254,52 +254,52 @@ if __name__ == "__main__":
 
     # get dataset dir loc, need this for post inference processing
     data_dir = os.path.join(cfg.dataset['root'], dataset.name)
-    infer_res = test(
-        cfg,
-        model,
-        test_data,
-        filtered_data=test_filtered_data,
-        device=device,
-        logger=logger,
-        return_metrics=False,
-        export_results=True,
-        top_ranks=None,
-        label="test",
-    )
+    # infer_res = test(
+    #     cfg,
+    #     model,
+    #     test_data,
+    #     filtered_data=test_filtered_data,
+    #     device=device,
+    #     logger=logger,
+    #     return_metrics=False,
+    #     export_results=True,
+    #     top_ranks=None,
+    #     label="test",
+    # )
 
-    if util.get_rank() == 0:
-        logger.warning(separator)
-        logger.warning(f"Run inference on Valid")
+    # if util.get_rank() == 0:
+    #     logger.warning(separator)
+    #     logger.warning(f"Run inference on Valid")
 
-    infer_res = test(
-        cfg,
-        model,
-        valid_data,
-        filtered_data=val_filtered_data,
-        device=device,
-        logger=logger,
-        return_metrics=False,
-        export_results=True,
-        top_ranks=None,
-        label="valid",
-    )
+    # infer_res = test(
+    #     cfg,
+    #     model,
+    #     valid_data,
+    #     filtered_data=val_filtered_data,
+    #     device=device,
+    #     logger=logger,
+    #     return_metrics=False,
+    #     export_results=True,
+    #     top_ranks=None,
+    #     label="valid",
+    # )
 
-    if util.get_rank() == 0:
-        logger.warning(separator)
-        logger.warning(f"Run inference on Train")
+    # if util.get_rank() == 0:
+    #     logger.warning(separator)
+    #     logger.warning(f"Run inference on Train")
 
-    infer_res = test(
-        cfg,
-        model,
-        train_data,
-        filtered_data=test_filtered_data,  # doesn't matter for train data
-        device=device,
-        logger=logger,
-        return_metrics=False,
-        export_results=True,
-        top_ranks=None,
-        label="train",
-    )
+    # infer_res = test(
+    #     cfg,
+    #     model,
+    #     train_data,
+    #     filtered_data=test_filtered_data,  # doesn't matter for train data
+    #     device=device,
+    #     logger=logger,
+    #     return_metrics=False,
+    #     export_results=True,
+    #     top_ranks=None,
+    #     label="train",
+    # )
 
     if util.get_rank() == 0:
         logger.warning(separator)

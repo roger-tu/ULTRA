@@ -344,12 +344,18 @@ def inference_data_batch(dataset, inference_file: str):
     )
     # transform into torch_geometric.data.Data object
     data = Data(
-        edge_index=infer_triples[["h", "t"]].to_torch().t(),
-        edge_type=infer_triples["r"].to_torch(),
+        edge_index=dataset[0].edge_index,
+        edge_type=dataset[0].edge_type,
+        target_edge_index=infer_triples[["h", "t"]].to_torch().t(),
+        target_edge_type=infer_triples["r"].to_torch(),
+        # target_edge_index = target_edge_index,
+        # target_edge_type = target_edge_type,
         num_relations=dataset[0].num_relations,
         num_nodes=dataset[0].num_nodes,
     )
-
+    # adds relation graph
+    data = tasks.build_relation_graph(data)
+    
     return data
 
 

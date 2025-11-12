@@ -1,5 +1,6 @@
-[project]
+[workspace]
 name = "ultra"
+authors = ["roger-tu <roger.tu@takeda.com>"]
 channels = ["https://prefix.dev/conda-forge"]
 description = "dependencies for ultra foundation model"
 platforms = ["linux-64"]
@@ -8,6 +9,7 @@ platforms = ["linux-64"]
 ninja = "*"
 easydict = "*"
 pyyaml = "*"
+s3fs = ">=2025.10.0,<2026"
 
 [pypi-dependencies]
 polars = ">=1"
@@ -27,6 +29,7 @@ torchvision = ">=0.20.1,<0.21"
 [feature.datasci.target.linux-64.dependencies]
 pandas = "*"
 ipykernel = "*"
+tqdm = "*"
 seaborn = ">=0.13.2,<0.14"
 boto3 = ">=1.36.4,<2"
 tensorboard = ">=2.18.0,<3"

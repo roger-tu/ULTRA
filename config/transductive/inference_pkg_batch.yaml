@@ -1,9 +1,9 @@
-local_output_dir: ~/knowledge-graph-workflows-and-models-team-primeKG/output # where you want to push your logging output
-s3_output_dir: 's3://tec-dev-usvga-93320-processed-data-bucket-01/v0'
+local_output_dir: ~/PrimeKG-Ultra/output # where you want to push your logging output
+s3_output_dir: {{s3}} #'/full/path/to/s3'
 
 dataset:
   class: {{ dataset }} # usually 'PrimeKG1'
-  root: /home/sagemaker-user/knowledge-graph-workflows-and-models-team-primeKG/data # wherever your dataset is stored
+  root: /full/path/to/data # wherever your dataset is stored
 
 model:
   class: Ultra
@@ -41,6 +41,6 @@ train:
   num_epoch: 0
   log_interval: 100
   batch_per_epoch: null
-checkpoint: {{ ckpt }} # '/home/sagemaker-user/knowledge-graph-workflows-and-models-team-primeKG/code/ULTRA/ckpts/ultra_primekg_50g_ft_epoch_1.pth'
+checkpoint: {{ ckpt }} # '/full/path/to/ckpts/ultra_primekg_50g_ft_epoch_1.pth'
 infer:
-  file: {{ triple_list }} # '/home/sagemaker-user/knowledge-graph-workflows-and-models-team-primeKG/data/primekg1/fake_triples.txt'
+  file: {{ triple_list }} # '/full/path/to/data/fake_triples.txt'

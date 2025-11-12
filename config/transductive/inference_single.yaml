@@ -1,4 +1,4 @@
-output_dir: ~/knowledge-graph-workflows-and-models-team-primeKG/output/ # ~/git/ # where you want to push your output
+local_output_dir: ~/PrimeKG-Ultra/output/ # full/path/to/output/folder where you want to push your output
 
 dataset:
   class: {{ dataset }}

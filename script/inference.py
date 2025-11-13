@@ -201,7 +201,11 @@ if __name__ == "__main__":
     task_name = cfg.task["name"]
     dataset = util.build_dataset(cfg)
     device = util.get_device(cfg)
+    id2ent_dict, ent2id_dict, id2rel_dict, rel2id_dict = util.get_entity_relation_dict(
+        working_dir, dataset
+    )  # make sure vocabulary export is the same as that used in inference
     train_data, valid_data, test_data = dataset[0], dataset[1], dataset[2]
+
     infer_data = util.inference_data_single(
         dataset, cfg.infer["h_ent"], cfg.infer["rel"]
     )

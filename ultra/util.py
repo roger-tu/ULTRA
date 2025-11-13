@@ -12,7 +12,7 @@ from jinja2 import meta
 import easydict
 
 import polars as pl
-
+import pickle
 import torch
 from torch import distributed as dist
 from torch_geometric.data import Data
@@ -200,13 +200,66 @@ def build_dataset(cfg):
     return dataset
 
 
+def get_entity_relation_dict(working_dir, dataset):
+    """
+    Extract entity-relation dictionary from dataset object and export it if it doesn't exist at cfg.local_output_dir
+    """
+    # output directory
+    output_dir = os.path.dirname(working_dir)
+    # create output directory if it doesn't exist
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # check if dictionary files already exist
+    for i, f in enumerate(
+        ["id2ent_dict.pkl", "ent2id_dict.pkl", "id2rel_dict.pkl", "rel2id_dict.pkl"]
+    ):
+        f_output_dir = os.path.join(output_dir, f)
+        # if dictionary doesn't exist, create it
+        if not os.path.exists(f_output_dir):
+            # create dictionary
+            if i == 0:
+                with open(f_output_dir, "wb") as fout:
+                    id2ent_dict = {v: k for k, v in dataset.entity_vocab.items()}
+                    pickle.dump(id2ent_dict, fout)
+            elif i == 1:
+                with open(f_output_dir, "wb") as fout:
+                    ent2id_dict = dataset.entity_vocab
+                    pickle.dump(ent2id_dict, fout)
+            elif i == 2:
+                with open(f_output_dir, "wb") as fout:
+                    id2rel_dict = {v: k for k, v in dataset.relation_vocab.items()}
+                pickle.dump(id2rel_dict, fout)
+            else:
+                with open(f_output_dir, "wb") as fout:
+                    rel2id_dict = dataset.relation_vocab
+                    pickle.dump(rel2id_dict, fout)
+        else:
+            # load dictionary
+
+            if i == 0:
+                with open(f_output_dir, "rb") as fin:
+                    id2ent_dict = pickle.load(fin)
+            elif i == 1:
+                with open(f_output_dir, "rb") as fin:
+                    ent2id_dict = pickle.load(fin)
+            elif i == 2:
+                with open(f_output_dir, "rb") as fin:
+                    id2rel_dict = pickle.load(fin)
+            else:
+                with open(f_output_dir, "rb") as fin:
+                    rel2id_dict = pickle.load(fin)
+
+    return id2ent_dict, ent2id_dict, id2rel_dict, rel2id_dict
+
+
 def translate_entity(dataset, entity: str):
     """
     Translate entity string to integer index using dataset entity vocabulary
     """
-    ent_dict = dataset.entity_vocab
+    ent2id_dict = dataset.entity_vocab
     try:
-        return ent_dict[entity]
+        return ent2id_dict[entity]
     except:
         raise KeyError(
             f'Entity, {entity}, not found in graph vocabulary. Please check string follows appropriate format (i.e "SOURCE:12345" or "MONDO:1024").'
@@ -284,27 +337,28 @@ def inference_data_single(
     # build polars dataframe representation of the graph
     g = build_graph(dataset, translate=True)
     # extract all relevant answers and translate them
-    if g.filter(pl.col("h") == trans_h_ent, pl.col("r") == trans_rel).shape[0] == 0:
+    filtered_g = g.filter(pl.col("h") == trans_h_ent, pl.col("r") == trans_rel)
+    if filtered_g.shape[0] == 0:
         #  if true head/rel combination doesn't exist, just generate a dummy one to make predictions on
         target_edge_index = torch.tensor(
             [[trans_h_ent], [trans_t_ent_dummy]]
         )  # [[x], [y]] size (2,1)
         target_edge_type = torch.tensor([trans_rel])  # [10] size 1
 
-    elif g.filter(pl.col("h") == trans_h_ent, pl.col("r") == trans_rel).shape[0] == 1:
+    elif filtered_g.shape[0] == 1:
         # if exactly 1 entry
         target_edge_index = (
-            g.select(["h", "t"]).to_torch().t()
+            filtered_g.select(["h", "t"]).to_torch().t()
         )  # 101rows x 2 col -> 2 rows x 101 col
         target_edge_type = torch.tensor([trans_rel])  # [10] size 1
 
     else:
         # get the set of real edges and their ranks given a h,r combo
         target_edge_index = (
-            g.select(["h", "t"]).to_torch().t()
+            filtered_g.select(["h", "t"]).to_torch().t()
         )  # 101rows x 2 col -> 2 rows x 101 col
         target_edge_type = (
-            g.select("r").to_torch().t().squeeze()
+            filtered_g.select("r").to_torch().t().squeeze()
         )  # 101 rows x 1 col -> 1 rows x 101 col -> 0 rows x 101 cols
 
     # creates torch_geometric graph dataset
@@ -315,10 +369,11 @@ def inference_data_single(
         target_edge_type=target_edge_type,
         num_relations=dataset[0].num_relations,
         num_nodes=dataset[0].num_nodes,
+        relation_graph=dataset[0].relation_graph,
     )
 
     # adds relation graph
-    inference_data = tasks.build_relation_graph(inference_data)
+    # inference_data = tasks.build_relation_graph(inference_data)
 
     return inference_data
 
@@ -355,7 +410,7 @@ def inference_data_batch(dataset, inference_file: str):
     )
     # adds relation graph
     data = tasks.build_relation_graph(data)
-    
+
     return data
 
 

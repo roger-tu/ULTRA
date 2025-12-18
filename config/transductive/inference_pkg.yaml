@@ -1,8 +1,8 @@
-output_dir: ~/knowledge-graph-workflows-and-models-team-primeKG/output/ # ~/git/
+local_output_dir: /home/sagemaker-user/PrimeKG-Ultra/output/ # ~/git/
 
 dataset:
   class: {{ dataset }}
-  root: ~/knowledge-graph-workflows-and-models-team-primeKG/data
+  root: /home/sagemaker-user/PrimeKG-Ultra/data
 
 model:
   class: Ultra

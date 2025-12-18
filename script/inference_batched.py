@@ -133,10 +133,10 @@ def test(
         if rank == 0:
             logger.warning(separator)
             logger.warning(
-                f"Exporting Predictions for batch {i} to {cfg['s3_output_dir']}"
+                f"Exporting Predictions for batch {i} to {cfg['result_output_dir']}"
             )  # get train edge predictions, batch-wise to decrease mem overhead
             # use the dataset root dir to retrieve dictionaries. If it doesn't exist, the script will build it
-            
+
             export_df = pl.DataFrame(
                 {
                     "h": batch[:, 0].tolist(),
@@ -150,19 +150,39 @@ def test(
                     "t_mask": t_mask.tolist(),
                 }
             ).unique()
-            export_df = data_util.translate_hrt(df=export_df, data_path=data_dir)
-            export_df = data_util.filter_process_results(df=export_df, results_path=data_dir)
-            export_df = data_util.structure_results(export_df)
-            (
-                export_df
-                    .with_columns(
-                        pl.int_ranges(1,pl.col('edge_in_primekg').list.len()+1).alias('rank'),
-                        pl.col('r_label').str.replace(' ','_')
-                    )
-                    .explode(['t_pred_label','t_pred_name','t_pred_score','t_pred_type','edge_in_primekg','rank'])
-                    .write_parquet(cfg['s3_output_dir'], partition_by=['h_label','r_label'])
+            export_df = data_util.translate_hrt(
+                df=export_df, data_path=os.path.dirname(working_dir)
             )
-            #.write_parquet(os.path.join(working_dir, f"{label}_{i}.parquet"))
+            export_df = data_util.filter_process_results(
+                df=export_df, results_path=os.path.dirname(working_dir)
+            )
+            export_df = data_util.structure_results(
+                export_df,
+                node_path=os.path.join(data_dir, "raw", "nodes.txt"),
+                graph_path=os.path.join(data_dir, "raw"),
+            )
+            (
+                export_df.with_columns(
+                    pl.int_ranges(1, pl.col("edge_in_primekg").list.len() + 1).alias(
+                        "rank"
+                    ),
+                    pl.col("r_label").str.replace(" ", "_"),
+                )
+                .explode(
+                    [
+                        "t_pred_label",
+                        "t_pred_name",
+                        "t_pred_score",
+                        "t_pred_type",
+                        "edge_in_primekg",
+                        "rank",
+                    ]
+                )
+                .write_parquet(
+                    cfg["result_output_dir"], partition_by=["h_label", "r_label"]
+                )
+            )
+            # .write_parquet(os.path.join(working_dir, f"{label}_{i}.parquet"))
 
     ranking = torch.cat(rankings)
     num_negative = torch.cat(num_negatives)
@@ -204,6 +224,15 @@ if __name__ == "__main__":
     args, vars = util.parse_args()
     cfg = util.load_config(args.config, context=vars)
     working_dir = util.create_working_directory(cfg)
+
+    # set result output dir
+    if util.get_rank() == 0:
+        if cfg.result_output_dir is None:
+            cfg.result_output_dir = working_dir
+        else:
+            # if not none, check if it exists, if not create it
+            if not os.path.exists(cfg["result_output_dir"]):
+                os.makedirs(cfg["result_output_dir"], exist_ok=True)
 
     torch.manual_seed(args.seed + util.get_rank())
 
@@ -247,13 +276,12 @@ if __name__ == "__main__":
     test_filtered_data = test_filtered_data.to(device)
     infer_filtered_data = infer_filtered_data.to(device)
 
-    if util.get_rank() == 0:
-        logger.warning(separator)
-        logger.warning(f"Run inference on Test")
-
+    # if util.get_rank() == 0:
+    #     logger.warning(separator)
+    #     logger.warning(f"Run inference on Test")
 
     # get dataset dir loc, need this for post inference processing
-    data_dir = os.path.join(cfg.dataset['root'], dataset.name)
+    data_dir = os.path.join(cfg.dataset["root"], dataset.name)
     # infer_res = test(
     #     cfg,
     #     model,
@@ -300,7 +328,6 @@ if __name__ == "__main__":
     #     top_ranks=None,
     #     label="train",
     # )
-
     if util.get_rank() == 0:
         logger.warning(separator)
         logger.warning(f'Run inference on {cfg.infer["file"]}')

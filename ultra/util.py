@@ -143,7 +143,7 @@ def create_working_directory(cfg):
     else:
         output = time.strftime("%Y-%m-%d-%H-%M-%S")
     working_dir = os.path.join(
-        os.path.expanduser(cfg.local_output_dir),
+        os.path.expanduser(cfg.logging_output_dir),
         cfg.model["class"],
         cfg.dataset["class"],
         f"{output}",
@@ -202,7 +202,7 @@ def build_dataset(cfg):
 
 def get_entity_relation_dict(working_dir, dataset):
     """
-    Extract entity-relation dictionary from dataset object and export it if it doesn't exist at cfg.local_output_dir
+    Extract entity-relation dictionary from dataset object and export it if it doesn't exist at cfg.logging_output_dir
     """
     # output directory
     output_dir = os.path.dirname(working_dir)
@@ -229,7 +229,7 @@ def get_entity_relation_dict(working_dir, dataset):
             elif i == 2:
                 with open(f_output_dir, "wb") as fout:
                     id2rel_dict = {v: k for k, v in dataset.relation_vocab.items()}
-                pickle.dump(id2rel_dict, fout)
+                    pickle.dump(id2rel_dict, fout)
             else:
                 with open(f_output_dir, "wb") as fout:
                     rel2id_dict = dataset.relation_vocab
@@ -407,9 +407,10 @@ def inference_data_batch(dataset, inference_file: str):
         # target_edge_type = target_edge_type,
         num_relations=dataset[0].num_relations,
         num_nodes=dataset[0].num_nodes,
+        relation_graph=dataset[0].relation_graph,
     )
     # adds relation graph
-    data = tasks.build_relation_graph(data)
+    # data = tasks.build_relation_graph(data)
 
     return data
 

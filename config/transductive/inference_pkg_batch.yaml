@@ -1,9 +1,9 @@
-local_output_dir: ~/PrimeKG-Ultra/output # where you want to push your logging output
-s3_output_dir: {{s3}} #'/full/path/to/s3'
+logging_output_dir: ~/PrimeKG-Ultra/ULTRA/output # where you want to push your logging output
+result_output_dir: {{ result_dir }} #'/full/path/to/s3'
 
 dataset:
   class: {{ dataset }} # usually 'PrimeKG1'
-  root: /full/path/to/data # wherever your dataset is stored
+  root: ~/PrimeKG-Ultra/ULTRA/data # wherever your dataset is stored
 
 model:
   class: Ultra

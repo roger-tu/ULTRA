@@ -1,4 +1,4 @@
-local_output_dir: ~/PrimeKG-Ultra/output/ # full/path/to/output/folder where you want to push your output
+logging_output_dir: ~/PrimeKG-Ultra/ULTRA/output/ # full/path/to/output/folder where you want to push your output
 
 dataset:
   class: {{ dataset }}
